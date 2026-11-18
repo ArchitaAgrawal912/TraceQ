@@ -199,6 +199,12 @@ with right:
     elif not can_start and not can_close:
         st.caption("This batch already has a reviewer decision.")
 
+    if st.toggle("Reveal final test result (demo only)", key="reveal"):
+        c = "#2A9D8F" if b.label == "pass" else "#C8553D"
+        st.markdown(f"Final SECOM test result: <b style='color:{c}'>{b.label.upper()}</b>"
+                    + (" · an unusual batch can still pass." if b.label == "pass" else ""),
+                    unsafe_allow_html=True)
+
     st.markdown("**Audit log**")
     if ss.audit:
         st.dataframe(pd.DataFrame(ss.audit[::-1]), hide_index=True, use_container_width=True)
