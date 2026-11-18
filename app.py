@@ -4,6 +4,7 @@ AI ranks batches and may raise them to "Unusual" at most. Only a human reviewer,
 evidence note, can move a batch to "Under investigation", "Confirmed defect" or "Cleared".
 Preprocessing and models mirror reference/secom_analysis.py exactly.
 """
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -111,6 +112,14 @@ def why_chart(drivers, height=210):
     return fig
 
 
+def set_status(batch, new, note):
+    old = st.session_state.status[batch]
+    st.session_state.status[batch] = new
+    st.session_state.audit.append({"time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "batch": batch,
+                                   "from → to": f"{old} → {new}", "note": note.strip()})
+    st.session_state.note_key += 1
+
+
 # ----------------------------------------------------------------------------- page
 st.set_page_config(page_title="TraceQ", page_icon="🔎", layout="wide")
 test, top, audit, ev = build()
@@ -171,5 +180,29 @@ with right:
     st.markdown("".join(f"- Signal **{s}** is **{z:+.1f}σ** vs passing runs\n" for s, z in b.drivers))
     st.markdown("<div class='note'>Unusual is not the same as defective. "
                 "Realistic AUC on this data is about 0.62.</div>", unsafe_allow_html=True)
+
+    st.markdown("**Reviewer actions**")
+    note = st.text_input("Evidence note (required)", key=f"note_{ss.note_key}_{b.batch}",
+                         placeholder="What did you check, and what did you find? Press Enter to apply.")
+    has_note = bool(note.strip())
+    a1, a2, a3 = st.columns(3)
+    can_start = status in ("Normal", "Unusual")
+    can_close = status == "Under investigation"
+    if a1.button("Start investigation", disabled=not (has_note and can_start), use_container_width=True):
+        set_status(b.batch, "Under investigation", note); st.rerun()
+    if a2.button("Confirm defect", disabled=not (has_note and can_close), use_container_width=True):
+        set_status(b.batch, "Confirmed defect", note); st.rerun()
+    if a3.button("Clear", disabled=not (has_note and can_close), use_container_width=True):
+        set_status(b.batch, "Cleared", note); st.rerun()
+    if not has_note:
+        st.caption("Buttons unlock once an evidence note is entered.")
+    elif not can_start and not can_close:
+        st.caption("This batch already has a reviewer decision.")
+
+    st.markdown("**Audit log**")
+    if ss.audit:
+        st.dataframe(pd.DataFrame(ss.audit[::-1]), hide_index=True, use_container_width=True)
+    else:
+        st.caption("No reviewer changes yet.")
 
 st.caption("Data: UCI SECOM (McCann & Johnston, 2008), CC BY 4.0. No operator, shift or personnel data is used.")
