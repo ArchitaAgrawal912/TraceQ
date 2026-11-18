@@ -8,6 +8,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import plotly.graph_objects as go
 import streamlit as st
 from sklearn.ensemble import IsolationForest, RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
@@ -91,6 +92,25 @@ def chip(status):
             f"padding:1px 10px;font-size:0.78rem;white-space:nowrap'>{status}</span>")
 
 
+def why_chart(drivers, height=210):
+    d = drivers[::-1]  # largest at top
+    names = [s for s, _ in d]
+    vals = [z for _, z in d]
+    fig = go.Figure(go.Bar(
+        x=[abs(v) for v in vals], y=names, orientation="h",
+        marker_color=["#F5B31B" if v > 0 else "#7DBBDD" for v in vals],
+        text=[f"{v:+.1f}σ" for v in vals], textposition="outside", cliponaxis=False,
+        textfont=dict(size=15, color="#E6E6E6"),
+    ))
+    fig.update_layout(
+        template="plotly_dark", height=height, margin=dict(l=10, r=60, t=10, b=30),
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        xaxis=dict(title="|σ| vs. passing runs in training data", gridcolor="#333", zeroline=False),
+        yaxis=dict(tickfont=dict(size=14)), showlegend=False,
+    )
+    return fig
+
+
 # ----------------------------------------------------------------------------- page
 st.set_page_config(page_title="TraceQ", page_icon="🔎", layout="wide")
 test, top, audit, ev = build()
@@ -137,5 +157,19 @@ with left:
                      use_container_width=True):
             ss.sel = bid
             st.rerun()
+
+with right:
+    b = test[test.batch == ss.sel].iloc[0]
+    status = ss.status[b.batch]
+    st.markdown(f"#### {b.batch} &nbsp; {chip(status)}", unsafe_allow_html=True)
+    st.caption(f"Run time {pd.Timestamp(b.ts):%Y-%m-%d %H:%M} · TraceQ rank percentile P{b.pct:.1f} "
+               f"(average of Isolation Forest, Random Forest and L1 logistic percentile ranks)")
+
+    st.markdown("**Why flagged** <span class='muted'>· top 3 signals vs. passing runs in training data</span>",
+                unsafe_allow_html=True)
+    st.plotly_chart(why_chart(b.drivers), use_container_width=True, config={"displayModeBar": False})
+    st.markdown("".join(f"- Signal **{s}** is **{z:+.1f}σ** vs passing runs\n" for s, z in b.drivers))
+    st.markdown("<div class='note'>Unusual is not the same as defective. "
+                "Realistic AUC on this data is about 0.62.</div>", unsafe_allow_html=True)
 
 st.caption("Data: UCI SECOM (McCann & Johnston, 2008), CC BY 4.0. No operator, shift or personnel data is used.")
