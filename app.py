@@ -1,0 +1,141 @@
+"""TraceQ prototype: Quality Intelligence decision support on UCI SECOM.
+
+AI ranks batches and may raise them to "Unusual" at most. Only a human reviewer, with an
+evidence note, can move a batch to "Under investigation", "Confirmed defect" or "Cleared".
+Preprocessing and models mirror reference/secom_analysis.py exactly.
+"""
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import streamlit as st
+from sklearn.ensemble import IsolationForest, RandomForestClassifier
+from sklearn.linear_model import LogisticRegression
+from sklearn.preprocessing import StandardScaler
+
+DATA = Path(__file__).parent / "data"
+QUEUE_SLOTS, AUDIT_SLOTS, SEED = 20, 2, 7
+
+STATUS_COLORS = {
+    "Normal": "#8D99AE",
+    "Unusual": "#F5B31B",
+    "Under investigation": "#7DBBDD",
+    "Confirmed defect": "#C8553D",
+    "Cleared": "#2A9D8F",
+}
+
+
+# ----------------------------------------------------------------------------- model
+@st.cache_resource(show_spinner="Scoring the test period (fits 3 models, ~20 s once)...")
+def build():
+    X = pd.read_csv(DATA / "secom.data", sep=r"\s+", header=None, na_values="NaN")
+    X.columns = [f"S{i}" for i in range(X.shape[1])]
+    lab = pd.read_csv(DATA / "secom_labels.data", sep=r"\s+", header=None, names=["y", "ts"], quotechar='"')
+    lab["ts"] = pd.to_datetime(lab["ts"], format="%d/%m/%Y %H:%M:%S")
+    y = (lab["y"] == 1).astype(int).values
+    order = np.argsort(lab["ts"].values, kind="stable")
+    X, y, ts = X.iloc[order].reset_index(drop=True), y[order], lab["ts"].iloc[order].reset_index(drop=True)
+
+    n_tr = int(len(X) * 0.7)
+    Xtr, Xte, ytr, yte = X.iloc[:n_tr], X.iloc[n_tr:], y[:n_tr], y[n_tr:]
+    keep = [c for c in X.columns if Xtr[c].isna().mean() <= 0.5 and Xtr[c].nunique(dropna=True) > 1]
+    med = Xtr[keep].median()
+    Atr, Ate = Xtr[keep].fillna(med), Xte[keep].fillna(med)
+    sc = StandardScaler().fit(Atr)
+    Ztr, Zte = np.clip(sc.transform(Atr), -10, 10), np.clip(sc.transform(Ate), -10, 10)
+
+    def rank(s):
+        return pd.Series(s).rank(pct=True).values
+
+    iso = IsolationForest(n_estimators=500, random_state=7).fit(Ztr[ytr == 0])
+    s_iso = -iso.score_samples(Zte)
+    rf = RandomForestClassifier(n_estimators=500, min_samples_leaf=3, class_weight="balanced_subsample",
+                                random_state=7, n_jobs=-1).fit(Ztr, ytr)
+    s_rf = rf.predict_proba(Zte)[:, 1]
+    lr = LogisticRegression(penalty="l1", C=0.05, solver="liblinear", class_weight="balanced").fit(Ztr, ytr)
+    s_lr = lr.predict_proba(Zte)[:, 1]
+    s_tq = (rank(s_iso) + rank(s_rf) + rank(s_lr)) / 3
+
+    # Why flagged: z vs passing training runs, on the scaled data
+    pass_mu, pass_sd = Ztr[ytr == 0].mean(0), Ztr[ytr == 0].std(0) + 1e-9
+    Z = (Zte - pass_mu) / pass_sd
+    top3 = np.argsort(-np.abs(Z), axis=1)[:, :3]
+    drivers = [[(keep[j], float(Z[i, j])) for j in top3[i]] for i in range(len(Zte))]
+
+    test = pd.DataFrame({
+        "batch": [f"B-{order[n_tr + i]}" for i in range(len(Zte))],  # B- + original row index in secom.data
+        "ts": ts.iloc[n_tr:].values,
+        "score": s_tq,
+        "pct": rank(s_tq) * 100,
+        "rf": s_rf,
+        "label": np.where(yte == 1, "fail", "pass"),
+    })
+    test["drivers"] = drivers
+
+    o = np.argsort(-s_tq)
+    top = list(o[:QUEUE_SLOTS])
+    rest = np.setdiff1d(np.arange(len(test)), top)
+    audit = list(np.random.default_rng(SEED).choice(rest, AUDIT_SLOTS, replace=False))
+
+    budget = int(round(0.2 * len(yte)))
+    rf_capture = yte[np.argsort(-s_rf)[:budget]].sum() / yte.sum()
+    top_pass = int((yte[o[:QUEUE_SLOTS]] == 0).sum())
+    return test, top, audit, {"rf_capture": rf_capture, "top_pass": top_pass, "budget": budget,
+                              "n_test": len(yte), "n_fail": int(yte.sum())}
+
+
+# ----------------------------------------------------------------------------- helpers
+def chip(status):
+    c = STATUS_COLORS[status]
+    return (f"<span style='background:{c}22;color:{c};border:1px solid {c};border-radius:999px;"
+            f"padding:1px 10px;font-size:0.78rem;white-space:nowrap'>{status}</span>")
+
+
+# ----------------------------------------------------------------------------- page
+st.set_page_config(page_title="TraceQ", page_icon="🔎", layout="wide")
+test, top, audit, ev = build()
+queue = [(i, "Ranked") for i in top] + [(i, "Random audit") for i in audit]
+
+ss = st.session_state
+if "status" not in ss:
+    # The AI may raise a batch to "Unusual" at most. Random audit slots start at "Normal".
+    ss.status = {test.batch[i]: ("Unusual" if kind == "Ranked" else "Normal") for i, kind in queue}
+    ss.audit, ss.note_key = [], 0
+    ss.sel = test.batch[top[0]]
+
+st.markdown("""<style>
+.block-container{padding-top:2.2rem;padding-bottom:1rem}
+.qrow{display:flex;align-items:center;gap:10px;font-size:0.9rem;line-height:1.9}
+.mono{font-family:ui-monospace,Consolas,monospace}
+.muted{color:#8D99AE}
+.note{background:#1d2333;border-left:3px solid #F5B31B;padding:8px 12px;border-radius:4px;font-size:0.9rem}
+.strip{background:#161b26;border:1px solid #2b3245;border-radius:8px;padding:10px 16px;font-size:1.0rem}
+</style>""", unsafe_allow_html=True)
+
+st.markdown("### TraceQ · Line 3 (UCI SECOM test period) · Today's queue: 20 inspection slots")
+st.caption("Decision support only. The model can raise a batch to **Unusual**; only a reviewer with an "
+           "evidence note can move it further up the Evidence Ladder: Normal → Unusual → Under investigation "
+           "→ Confirmed defect / Cleared.")
+
+left, right = st.columns([1, 1.25], gap="large")
+
+with left:
+    st.markdown("#### Ranked queue")
+    for n, (i, kind) in enumerate(queue):
+        if n == QUEUE_SLOTS:
+            st.markdown("<div class='muted' style='margin-top:6px'>Exploration slots</div>", unsafe_allow_html=True)
+        bid = test.batch[i]
+        rank_lbl = f"#{n + 1}" if kind == "Ranked" else "Random audit"
+        c1, c2 = st.columns([5, 1])
+        c1.markdown(
+            f"<div class='qrow'><span class='muted' style='width:92px'>{rank_lbl}</span>"
+            f"<span class='mono' style='width:62px'><b>{bid}</b></span>"
+            f"<span class='muted' style='width:122px'>{pd.Timestamp(test.ts[i]):%Y-%m-%d %H:%M}</span>"
+            f"<span style='width:58px'>P{test.pct[i]:.1f}</span>{chip(ss.status[bid])}</div>",
+            unsafe_allow_html=True)
+        if c2.button("Open", key=f"open_{bid}", type="primary" if ss.sel == bid else "secondary",
+                     use_container_width=True):
+            ss.sel = bid
+            st.rerun()
+
+st.caption("Data: UCI SECOM (McCann & Johnston, 2008), CC BY 4.0. No operator, shift or personnel data is used.")
