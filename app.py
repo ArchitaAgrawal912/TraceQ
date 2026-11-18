@@ -79,8 +79,15 @@ def build():
     rest = np.setdiff1d(np.arange(len(test)), top)
     audit = list(np.random.default_rng(SEED).choice(rest, AUDIT_SLOTS, replace=False))
 
+    # Evaluation strip: the static Random Forest from analysis/secom_extra.py (400 trees, pandas-std
+    # scaling), so the app shows the same capture number as the deck.
+    mu_e, sd_e = Atr.mean(), Atr.std() + 1e-9
+    to_z = lambda A: np.clip(((A - mu_e) / sd_e).values, -10, 10)
+    rf_eval = RandomForestClassifier(n_estimators=400, min_samples_leaf=3, class_weight="balanced_subsample",
+                                     random_state=7, n_jobs=-1).fit(to_z(Atr), ytr)
+    s_eval = rf_eval.predict_proba(to_z(Ate))[:, 1]
     budget = int(round(0.2 * len(yte)))
-    rf_capture = yte[np.argsort(-s_rf)[:budget]].sum() / yte.sum()
+    rf_capture = yte[np.argsort(-s_eval)[:budget]].sum() / yte.sum()
     top_pass = int((yte[o[:QUEUE_SLOTS]] == 0).sum())
     return test, top, audit, {"rf_capture": rf_capture, "top_pass": top_pass, "budget": budget,
                               "n_test": len(yte), "n_fail": int(yte.sum())}
