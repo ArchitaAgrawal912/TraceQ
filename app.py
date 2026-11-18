@@ -211,4 +211,11 @@ with right:
     else:
         st.caption("No reviewer changes yet.")
 
+st.markdown("---")
+st.markdown(
+    f"<div class='strip'><b>Evaluation (test period, {ev['n_test']} runs, {ev['n_fail']} fails):</b> "
+    f"Inspecting the top 20% catches <b>{ev['rf_capture'] * 100:.0f}%</b> of fails vs ~20% random "
+    f"<span class='muted'>(Random Forest score, {ev['budget']} runs)</span> · "
+    f"<b>{ev['top_pass']}/{QUEUE_SLOTS}</b> top flags passed final test</div>",
+    unsafe_allow_html=True)
 st.caption("Data: UCI SECOM (McCann & Johnston, 2008), CC BY 4.0. No operator, shift or personnel data is used.")
