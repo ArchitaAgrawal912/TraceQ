@@ -148,6 +148,29 @@ st.markdown("""<style>
 .strip{background:#161b26;border:1px solid #2b3245;border-radius:8px;padding:10px 16px;font-size:1.0rem}
 </style>""", unsafe_allow_html=True)
 
+# Compact layout for the slide card screenshot: /?view=strip
+if st.query_params.get("view") == "strip":
+    st.markdown("<style>header,[data-testid='stToolbar']{display:none!important}"
+                ".block-container{padding:0.6rem 1.2rem!important}</style>", unsafe_allow_html=True)
+    b = test.iloc[top[0]]
+    st.markdown("<div style='font-size:1.05rem'><b>TraceQ</b> · Line 3 (UCI SECOM test period) · "
+                "Today's queue: 20 inspection slots</div>", unsafe_allow_html=True)
+    left, right = st.columns([1, 1.15], gap="large")
+    with left:
+        rows = "".join(
+            f"<div class='qrow'><span class='mono' style='width:62px'>{test.batch[i]}</span>"
+            f"<span class='muted' style='width:120px'>{pd.Timestamp(test.ts[i]):%Y-%m-%d %H:%M}</span>"
+            f"<span style='width:62px'>P{test.pct[i]:.1f}</span>{chip(ss.status[test.batch[i]])}</div>"
+            for i in top[:5])
+        st.markdown(f"<div class='muted' style='font-size:0.8rem'>RANKED QUEUE (top 5 of 20)</div>{rows}",
+                    unsafe_allow_html=True)
+    with right:
+        st.markdown(f"<div class='muted' style='font-size:0.8rem'>WHY FLAGGED · {b.batch} · "
+                    f"vs. passing runs in training data</div>", unsafe_allow_html=True)
+        st.plotly_chart(why_chart(b.drivers, height=190), use_container_width=True,
+                        config={"displayModeBar": False})
+    st.stop()
+
 st.markdown("### TraceQ · Line 3 (UCI SECOM test period) · Today's queue: 20 inspection slots")
 st.caption("Decision support only. The model can raise a batch to **Unusual**; only a reviewer with an "
            "evidence note can move it further up the Evidence Ladder: Normal → Unusual → Under investigation "
